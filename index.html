@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vortex — WebGL Fluid Simulation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+
+  <div class="ui" id="ui">
+    <div class="ui-header">
+      <div>
+        <div class="ui-title">Vortex</div>
+        <div class="ui-subtitle">WebGL2 Fluid Simulation</div>
+      </div>
+      <button class="icon-btn" id="toggleUI" title="Toggle panel">&#8722;</button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="control-group">
+      <div class="control-label">
+        <span>Particles</span>
+        <span class="control-value" id="particleVal">16 384</span>
+      </div>
+      <input type="range" id="particleCount" min="0" max="4" step="1" value="2" />
+    </div>
+
+    <div class="control-group">
+      <div class="control-label">
+        <span>Vorticity</span>
+        <span class="control-value" id="vorticityVal">30</span>
+      </div>
+      <input type="range" id="vorticity" min="0" max="100" step="1" value="30" />
+    </div>
+
+    <div class="control-group">
+      <div class="control-label">
+        <span>Dissipation</span>
+        <span class="control-value" id="dissipationVal">0.97</span>
+      </div>
+      <input type="range" id="dissipation" min="0.88" max="1.0" step="0.005" value="0.97" />
+    </div>
+
+    <div class="control-group">
+      <div class="control-label">
+        <span>Splat Radius</span>
+        <span class="control-value" id="splatVal">0.30</span>
+      </div>
+      <input type="range" id="splatSize" min="0.05" max="1.0" step="0.05" value="0.30" />
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="control-label" style="margin-bottom:8px"><span>Color Mode</span></div>
+    <div class="color-modes">
+      <button class="color-btn active" data-mode="0"><span>Ink</span></button>
+      <button class="color-btn" data-mode="1"><span>Neon</span></button>
+      <button class="color-btn" data-mode="2"><span>Fire</span></button>
+      <button class="color-btn" data-mode="3"><span>Ocean</span></button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="action-btns">
+      <button class="btn primary" id="pauseBtn">Pause</button>
+      <button class="btn" id="resetBtn">Reset</button>
+    </div>
+  </div>
+
+  <div class="fps-badge" id="fpsBadge">-- fps</div>
+  <div class="hint" id="hint">Drag anywhere to create vortices</div>
+
+  <script src="js/vortex.js"></script>
+</body>
+</html>
