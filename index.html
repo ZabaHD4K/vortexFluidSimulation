@@ -3,10 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Vortex — WebGL Fluid Simulation</title>
+  <title>Vortex 3D — SPH Water Simulation</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
   <canvas id="canvas"></canvas>
@@ -14,67 +23,85 @@
   <div class="ui" id="ui">
     <div class="ui-header">
       <div>
-        <div class="ui-title">Vortex</div>
-        <div class="ui-subtitle">WebGL2 Fluid Simulation</div>
+        <div class="ui-title">Vortex 3D</div>
+        <div class="ui-subtitle">SPH · Real Fluid Mechanics</div>
       </div>
-      <button class="icon-btn" id="toggleUI" title="Toggle panel">&#8722;</button>
+      <button class="icon-btn" id="toggleUI">&#8722;</button>
     </div>
 
     <div class="divider"></div>
 
-    <div class="control-group">
-      <div class="control-label">
-        <span>Particles</span>
-        <span class="control-value" id="particleVal">16 384</span>
+    <div class="collapsible">
+
+      <div class="control-group">
+        <div class="control-label">
+          <span>Particles</span>
+          <span class="control-value" id="particleVal">40</span>
+        </div>
+        <input type="range" id="particleCount" min="0" max="4" step="1" value="2" />
       </div>
-      <input type="range" id="particleCount" min="0" max="4" step="1" value="2" />
-    </div>
 
-    <div class="control-group">
-      <div class="control-label">
-        <span>Vorticity</span>
-        <span class="control-value" id="vorticityVal">30</span>
+      <div class="control-group">
+        <div class="control-label">
+          <span>Friction</span>
+          <span class="control-value" id="viscosityVal">0.55</span>
+        </div>
+        <input type="range" id="viscosity" min="0.05" max="2.0" step="0.05" value="0.55" />
       </div>
-      <input type="range" id="vorticity" min="0" max="100" step="1" value="30" />
-    </div>
 
-    <div class="control-group">
-      <div class="control-label">
-        <span>Dissipation</span>
-        <span class="control-value" id="dissipationVal">0.97</span>
+      <div class="control-group">
+        <div class="control-label">
+          <span>Bounce</span>
+          <span class="control-value" id="pressureVal">0.10</span>
+        </div>
+        <input type="range" id="pressure" min="0.01" max="0.50" step="0.01" value="0.10" />
       </div>
-      <input type="range" id="dissipation" min="0.88" max="1.0" step="0.005" value="0.97" />
-    </div>
 
-    <div class="control-group">
-      <div class="control-label">
-        <span>Splat Radius</span>
-        <span class="control-value" id="splatVal">0.30</span>
+      <div class="control-group">
+        <div class="control-label">
+          <span>Gravity</span>
+          <span class="control-value" id="gravityVal">12</span>
+        </div>
+        <input type="range" id="gravity" min="2" max="25" step="1" value="12" />
       </div>
-      <input type="range" id="splatSize" min="0.05" max="1.0" step="0.05" value="0.30" />
-    </div>
 
-    <div class="divider"></div>
+      <div class="divider"></div>
 
-    <div class="control-label" style="margin-bottom:8px"><span>Color Mode</span></div>
-    <div class="color-modes">
-      <button class="color-btn active" data-mode="0"><span>Ink</span></button>
-      <button class="color-btn" data-mode="1"><span>Neon</span></button>
-      <button class="color-btn" data-mode="2"><span>Fire</span></button>
-      <button class="color-btn" data-mode="3"><span>Ocean</span></button>
-    </div>
+      <div class="control-label" style="margin-bottom:8px"><span>Water</span></div>
+      <div class="color-modes">
+        <button class="color-btn active" data-mode="0"><span>Deep</span></button>
+        <button class="color-btn" data-mode="1"><span>Tropic</span></button>
+        <button class="color-btn" data-mode="2"><span>Magma</span></button>
+        <button class="color-btn" data-mode="3"><span>Void</span></button>
+      </div>
 
-    <div class="divider"></div>
+      <div class="divider"></div>
 
-    <div class="action-btns">
-      <button class="btn primary" id="pauseBtn">Pause</button>
-      <button class="btn" id="resetBtn">Reset</button>
+      <div class="action-btns">
+        <button class="btn primary" id="pauseBtn">Pause</button>
+        <button class="btn" id="resetBtn">Reset</button>
+      </div>
+      <button class="btn tidal" id="shakeBtn">Shake &nbsp;<span class="key">Space</span></button>
+      <button class="btn tidal" id="waveBtn">Wave &nbsp;<span class="key">W</span></button>
+
     </div>
   </div>
 
-  <div class="fps-badge" id="fpsBadge">-- fps</div>
-  <div class="hint" id="hint">Drag anywhere to create vortices</div>
+  <div class="controls-hint">
+    <span>Left drag — rotate</span>
+    <span class="sep">·</span>
+    <span>Move/click — push</span>
+    <span class="sep">·</span>
+    <span>Right drag — tilt box</span>
+    <span class="sep">·</span>
+    <span>Arrows — tilt</span>
+    <span class="sep">·</span>
+    <span>Space — shake</span>
+  </div>
 
-  <script src="js/vortex.js"></script>
+  <div class="fps-badge" id="fpsBadge">-- fps</div>
+
+  <script type="module" src="js/sph.js"></script>
+  <script type="module" src="js/app3d.js"></script>
 </body>
 </html>
