@@ -356,7 +356,7 @@ void main() {
 // ---------------------------------------------------------------------------
 // GL SETUP
 // ---------------------------------------------------------------------------
-const canvas = document.getElementById('canvas');
+const canvas = document.getElementById('canvas-2d');
 let gl;
 
 function initGL() {
@@ -747,11 +747,11 @@ function loop(ts) {
 
   frames++; fpsAcc += dt;
   if (fpsAcc >= 0.5) {
-    fpsBadge.textContent = Math.round(frames / fpsAcc) + ' fps';
+    if (!cfg.PAUSED) fpsBadge.textContent = Math.round(frames / fpsAcc) + ' fps';
     frames = 0; fpsAcc = 0;
   }
 
-  if (cfg.PAUSED) { render(); return; }
+  if (cfg.PAUSED) return;
 
   resizeCanvas();
   simTime += dt;
@@ -818,8 +818,15 @@ canvas.addEventListener('touchmove', e => {
 }, {passive:false});
 canvas.addEventListener('touchend', e => { for(const t of e.changedTouches) pointers.delete(t.identifier); });
 
-// Tidal wave on spacebar
-window.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); tidalWave(); } });
+// Tidal wave on spacebar (only when 2D mode is active)
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space' && !cfg.PAUSED) { e.preventDefault(); tidalWave(); }
+});
+
+// Pause/resume when mode switches
+window.addEventListener('vortexmode', e => {
+  cfg.PAUSED = (e.detail.mode !== '2d');
+});
 
 // ---------------------------------------------------------------------------
 // UI
@@ -827,11 +834,11 @@ window.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDef
 function setupUI() {
   const $ = id => document.getElementById(id);
 
-  const bubbleSlider = $('particleCount');
-  $('particleVal').textContent = BUBBLE_LABELS[cfg.BUBBLE_IDX];
+  const bubbleSlider = $('particleCount2d');
+  $('particleVal2d').textContent = BUBBLE_LABELS[cfg.BUBBLE_IDX];
   bubbleSlider.addEventListener('input', () => {
     cfg.BUBBLE_IDX = +bubbleSlider.value;
-    $('particleVal').textContent = BUBBLE_LABELS[cfg.BUBBLE_IDX];
+    $('particleVal2d').textContent = BUBBLE_LABELS[cfg.BUBBLE_IDX];
     initBubbles();
   });
 
@@ -853,22 +860,22 @@ function setupUI() {
     $('splatVal').textContent = (+splatSlider.value).toFixed(2);
   });
 
-  document.querySelectorAll('.color-btn').forEach(btn => {
+  document.querySelectorAll('#colorModes2d .color-btn2d').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('#colorModes2d .color-btn2d').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       cfg.COLOR_MODE = +btn.dataset.mode;
     });
   });
 
-  const pauseBtn = $('pauseBtn');
+  const pauseBtn = $('pauseBtn2d');
   pauseBtn.addEventListener('click', () => {
     cfg.PAUSED = !cfg.PAUSED;
     pauseBtn.textContent = cfg.PAUSED ? 'Resume' : 'Pause';
     pauseBtn.classList.toggle('active', cfg.PAUSED);
   });
 
-  $('resetBtn').addEventListener('click', () => {
+  $('resetBtn2d').addEventListener('click', () => {
     [velocity.read,velocity.write,dye.read,dye.write,
      pressure.read,pressure.write,divergence,vorticity].forEach(f => {
       gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo);
@@ -886,7 +893,7 @@ function setupUI() {
     $('toggleUI').textContent = ui.classList.contains('collapsed') ? '+' : '−';
   });
 
-  document.querySelectorAll('input[type="range"]').forEach(inp => {
+  document.querySelectorAll('#panel2d input[type="range"]').forEach(inp => {
     const upd = () => {
       const pct = ((+inp.value - +inp.min) / (+inp.max - +inp.min)) * 100;
       inp.style.setProperty('--pct', pct + '%');
@@ -906,7 +913,11 @@ function setupUI() {
   initPrograms();
   setupUI();
 
-  // Initial waves — immediately shows vortex shedding behind pillars
+  // Start paused — 3D mode is active by default.
+  // The 'vortexmode' event will unpause when user switches to 2D.
+  cfg.PAUSED = true;
+
+  // Pre-warm the fluid so it's ready when the user first switches to 2D
   tidalWave();
   setTimeout(() => tidalWave(), 400);
   for (let i = 0; i < 5; i++) randomSplat();

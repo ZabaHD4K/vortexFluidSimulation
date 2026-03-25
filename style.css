@@ -22,13 +22,20 @@ body {
   user-select: none;
 }
 
-#canvas {
+#canvas,
+#canvas-2d {
   position: fixed;
   inset: 0;
   width: 100%;
   height: 100%;
   cursor: crosshair;
   display: block;
+}
+
+/* Hidden simulation canvas — invisible but still laid out (keeps WebGL context alive) */
+.canvas-inactive {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* ------------------------------------------------------------------ UI */
@@ -81,6 +88,19 @@ body {
   text-transform: uppercase;
   margin-top: 5px;
 }
+
+.mode-link {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 9px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--accent-a);
+  text-decoration: none;
+  opacity: 0.65;
+  transition: opacity 0.18s;
+}
+.mode-link:hover { opacity: 1; }
 
 .icon-btn {
   background: var(--surface);
@@ -156,6 +176,34 @@ input[type="range"]::-webkit-slider-thumb:hover {
   box-shadow: 0 0 0 3px rgba(34,211,238,0.45), 0 0 16px rgba(34,211,238,0.4);
 }
 
+/* -------------------------------------------------------- MODE SWITCHER */
+.mode-switcher {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.mode-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 9px 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted2);
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.18s;
+}
+.mode-btn:hover { color: var(--text); border-color: var(--border-hi); background: rgba(255,255,255,0.06); }
+.mode-btn.active {
+  background: linear-gradient(135deg, rgba(34,211,238,0.15), rgba(14,165,233,0.10));
+  border-color: rgba(34,211,238,0.40);
+  color: #22d3ee;
+}
+
 /* -------------------------------------------------------- COLOR BTNS */
 .color-modes {
   display: grid;
@@ -196,6 +244,33 @@ input[type="range"]::-webkit-slider-thumb:hover {
 .color-btn[data-mode="1"] { --grad: linear-gradient(135deg, #22d3ee, #06b6d4); }
 .color-btn[data-mode="2"] { --grad: linear-gradient(135deg, #f97316, #dc2626); }
 .color-btn[data-mode="3"] { --grad: linear-gradient(135deg, #10b981, #0891b2); }
+
+/* 2-D colour buttons — violet palette */
+.color-btn2d {
+  position: relative; overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 0;
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--muted2); cursor: pointer; text-align: center;
+  transition: color 0.18s, border-color 0.18s;
+}
+.color-btn2d::after {
+  content: ''; position: absolute; inset: 0;
+  background: var(--grad); opacity: 0; transition: opacity 0.18s;
+}
+.color-btn2d:hover  { color: var(--text); border-color: var(--border-hi); }
+.color-btn2d:hover::after { opacity: 0.12; }
+.color-btn2d.active { color: var(--text); border-color: rgba(167,139,250,0.35); }
+.color-btn2d.active::after { opacity: 0.18; }
+.color-btn2d span { position: relative; z-index: 1; }
+
+.color-btn2d[data-mode="0"] { --grad: linear-gradient(135deg, #0ea5e9, #0369a1); }
+.color-btn2d[data-mode="1"] { --grad: linear-gradient(135deg, #22d3ee, #06b6d4); }
+.color-btn2d[data-mode="2"] { --grad: linear-gradient(135deg, #ef4444, #f97316); }
+.color-btn2d[data-mode="3"] { --grad: linear-gradient(135deg, #10b981, #a78bfa); }
 
 /* -------------------------------------------------------- ACTION BTNS */
 .action-btns {

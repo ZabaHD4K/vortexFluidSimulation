@@ -6,32 +6,37 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { SPH }             from './sph.js';
 
 // ---------------------------------------------------------------------------
-// STATE
+// PARTICLE PRESETS
+// Radius scales automatically as N^(-1/3) inside SPH — no manual tuning needed.
 // ---------------------------------------------------------------------------
-const PCOUNTS = [15, 25, 40, 60, 80];
-const PLABELS = ['15', '25', '40', '60', '80'];
+const PCOUNTS = [40, 80, 150, 250, 400];
+const PLABELS = ['40', '80', '150', '250', '400'];
 const BOX     = 0.58;
 
-let N         = PCOUNTS[2];
+let N         = PCOUNTS[2];   // default: 150 particles
 let sim       = new SPH(N);
 let colorMode = 0;
 let paused    = false;
+let hidden    = false;   // true when 2D mode is active — skip rendering entirely
 let gravBase  = 8;
 let gravTiltX = 0;
 let gravTiltZ = 0;
 
-// Shake animation state
+// Shake state
 let shakeTimer = 0;
 let shakeAngle = 0;
 
-function applyGravity(extraX = 0, extraZ = 0) {
-  const tx  = gravTiltX + extraX;
-  const tz  = gravTiltZ + extraZ;
-  const len = Math.sqrt(tx*tx + 1.0 + tz*tz);
+// ---------------------------------------------------------------------------
+// GRAVITY HELPER
+// Computes gx/gz from tilt; gy from normal gravity or an override value
+// (used by the vertical shake to oscillate the Y component independently).
+// ---------------------------------------------------------------------------
+function applyGravity(gyOverride = null) {
+  const len = Math.sqrt(gravTiltX * gravTiltX + 1.0 + gravTiltZ * gravTiltZ);
   const s   = gravBase / len;
-  sim.gx    =  tx * s;
-  sim.gy    = -s;
-  sim.gz    =  tz * s;
+  sim.gx = gravTiltX * s;
+  sim.gy = (gyOverride !== null) ? gyOverride : -s;
+  sim.gz = gravTiltZ * s;
 }
 applyGravity();
 
@@ -65,7 +70,7 @@ controls.maxDistance   = 8.0;
 controls.minPolarAngle = Math.PI / 8;
 controls.maxPolarAngle = Math.PI / 2.1;
 controls.target.set(0, -0.1, 0);
-// Left = push water (custom), Right = orbit, Middle = zoom
+// Left-drag = push water (custom raycaster), Right-drag = orbit, Middle = zoom
 controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
 
 // ---------------------------------------------------------------------------
@@ -90,7 +95,7 @@ causticB.position.set(-0.3, -0.2, -0.2);
 scene.add(causticB);
 
 // ---------------------------------------------------------------------------
-// ROOM (tiltable)
+// CONTAINER BOX  (tiltable group)
 // ---------------------------------------------------------------------------
 const roomGroup = new THREE.Group();
 scene.add(roomGroup);
@@ -100,7 +105,9 @@ scene.add(roomGroup);
 
   roomGroup.add(new THREE.Mesh(
     new THREE.BoxGeometry(W, W, W),
-    new THREE.MeshStandardMaterial({ color: 0x0b1510, roughness: 0.94, metalness: 0.04, side: THREE.BackSide })
+    new THREE.MeshStandardMaterial({
+      color: 0x0b1510, roughness: 0.94, metalness: 0.04, side: THREE.BackSide,
+    })
   ));
 
   const floor = new THREE.Mesh(
@@ -115,8 +122,8 @@ scene.add(roomGroup);
   const lines = [];
   for (let t = 0; t <= 8; t++) {
     const v = -BOX + (t / 8) * W;
-    lines.push(-BOX, -BOX+0.002, v,   BOX, -BOX+0.002, v);
-    lines.push(v,    -BOX+0.002, -BOX, v,  -BOX+0.002,  BOX);
+    lines.push(-BOX, -BOX + 0.002, v,    BOX, -BOX + 0.002, v);
+    lines.push(v,    -BOX + 0.002, -BOX,  v,  -BOX + 0.002,  BOX);
   }
   const lg = new THREE.BufferGeometry();
   lg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lines), 3));
@@ -128,38 +135,47 @@ scene.add(roomGroup);
     new THREE.LineBasicMaterial({ color: 0x1a4a2a, transparent: true, opacity: 0.45 })
   ));
 
+  // Corner accent dots
   const dotG = new THREE.SphereGeometry(0.010, 6, 5);
   const dotM = new THREE.MeshBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.55 });
-  for (const x of [-BOX, BOX]) for (const y of [-BOX, BOX]) for (const z of [-BOX, BOX]) {
-    const m = new THREE.Mesh(dotG, dotM);
-    m.position.set(x, y, z);
-    roomGroup.add(m);
-  }
+  for (const x of [-BOX, BOX])
+    for (const y of [-BOX, BOX])
+      for (const z of [-BOX, BOX]) {
+        const m = new THREE.Mesh(dotG, dotM);
+        m.position.set(x, y, z);
+        roomGroup.add(m);
+      }
 })();
 
 // ---------------------------------------------------------------------------
-// WATER SPHERES — InstancedMesh, colored by speed
+// WATER SPHERES — InstancedMesh coloured by speed
+// Polygon count scales down with N to keep draw calls cheap at 400 particles.
 // ---------------------------------------------------------------------------
 const COLOR_MODES = [
-  [new THREE.Color(0x001f6e), new THREE.Color(0x22eeff)],
-  [new THREE.Color(0x003322), new THREE.Color(0x00ffcc)],
-  [new THREE.Color(0x5a0800), new THREE.Color(0xff8800)],
-  [new THREE.Color(0x180040), new THREE.Color(0xcc44ff)],
+  [new THREE.Color(0x001f6e), new THREE.Color(0x22eeff)],  // Deep
+  [new THREE.Color(0x003322), new THREE.Color(0x00ffcc)],  // Tropic
+  [new THREE.Color(0x5a0800), new THREE.Color(0xff8800)],  // Magma
+  [new THREE.Color(0x180040), new THREE.Color(0xcc44ff)],  // Void
 ];
 
 const sphereMat = new THREE.MeshStandardMaterial({
-  roughness: 0.08,
-  metalness: 0.05,
-  transparent: true,
-  opacity: 0.88,
+  roughness: 0.08, metalness: 0.05, transparent: true, opacity: 0.88,
 });
 
 let sphereMesh = makeSpheres(N);
 scene.add(sphereMesh);
 
+function sphereSegments(n) {
+  if (n >= 300) return [9,  7];
+  if (n >= 150) return [13, 10];
+  if (n >=  80) return [18, 13];
+  return [24, 16];
+}
+
 function makeSpheres(n) {
+  const [seg, ring] = sphereSegments(n);
   const m = new THREE.InstancedMesh(
-    new THREE.SphereGeometry(sim.r, 24, 16),
+    new THREE.SphereGeometry(sim.r, seg, ring),
     sphereMat,
     n
   );
@@ -183,7 +199,7 @@ function syncSpheres() {
 }
 
 // ---------------------------------------------------------------------------
-// CURSOR VISUAL
+// CURSOR VISUAL  (hover glow + click ring)
 // ---------------------------------------------------------------------------
 const cursorMesh = new THREE.Mesh(
   new THREE.SphereGeometry(0.040, 14, 10),
@@ -201,14 +217,14 @@ ringMesh.visible = false;
 scene.add(ringMesh);
 
 // ---------------------------------------------------------------------------
-// POST-PROCESSING
+// POST-PROCESSING — Unreal Bloom for that liquid glow
 // ---------------------------------------------------------------------------
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 1.0, 0.6, 0.45));
 
 // ---------------------------------------------------------------------------
-// MOUSE — hover always repels, left click = burst
+// MOUSE — hover repels water; left-click bursts; right-drag = orbit
 // ---------------------------------------------------------------------------
 const raycaster  = new THREE.Raycaster();
 const _mouse     = new THREE.Vector2();
@@ -224,7 +240,7 @@ function updateCursor(mx, my) {
   _mouse.set((mx / innerWidth) * 2 - 1, -(my / innerHeight) * 2 + 1);
   raycaster.setFromCamera(_mouse, camera);
 
-  // Interaction plane at current average sphere height
+  // Project onto a plane at the average particle height
   let avgY = 0;
   for (let i = 0; i < sim.N; i++) avgY += sim.py[i];
   _iPlane.constant = -(avgY / sim.N);
@@ -244,7 +260,7 @@ function updateCursor(mx, my) {
   ringMesh.visible = true;
   cursorActive = true;
 
-  // Gentle hover repulsion — scales with speed
+  // Gentle hover repulsion, scales with cursor speed
   sim.repelFrom(_hitPoint.x, _hitPoint.y, _hitPoint.z, 0.7 + cursorVel * 1.0, 0.30);
 
   if (isClicking) {
@@ -253,9 +269,8 @@ function updateCursor(mx, my) {
   }
 }
 
-canvas.addEventListener('mousemove', e => updateCursor(e.clientX, e.clientY));
-
-canvas.addEventListener('mousedown', e => {
+canvas.addEventListener('mousemove',  e => updateCursor(e.clientX, e.clientY));
+canvas.addEventListener('mousedown',  e => {
   if (e.button === 0) {
     isClicking = true;
     const burst = 8.0 + cursorVel * 3.0;
@@ -272,83 +287,137 @@ canvas.addEventListener('mouseleave', () => {
 });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
-// Arrow keys = tilt box
+// Pause rendering when the other simulation is active
+window.addEventListener('vortexmode', e => { hidden = (e.detail.mode !== '3d'); });
+
+// Arrow keys tilt the box; Space = vertical shake; W = wave; R = reset
 window.addEventListener('keydown', e => {
   switch (e.code) {
     case 'Space':
-      shakeTimer = 1.4;
-      shakeAngle = Math.random() * Math.PI * 2;
-      e.preventDefault();
-      break;
-    case 'ArrowLeft':  gravTiltX = Math.max(-1.8, gravTiltX - 0.25); applyGravity(); e.preventDefault(); break;
-    case 'ArrowRight': gravTiltX = Math.min( 1.8, gravTiltX + 0.25); applyGravity(); e.preventDefault(); break;
-    case 'ArrowUp':    gravTiltZ = Math.max(-1.8, gravTiltZ - 0.25); applyGravity(); e.preventDefault(); break;
-    case 'ArrowDown':  gravTiltZ = Math.min( 1.8, gravTiltZ + 0.25); applyGravity(); e.preventDefault(); break;
-    case 'KeyR':       resetSim(); break;
+      triggerShake(); e.preventDefault(); break;
+    case 'KeyW':
+      triggerWave(); break;
+    case 'ArrowLeft':
+      gravTiltX = Math.max(-1.8, gravTiltX - 0.25); applyGravity(); e.preventDefault(); break;
+    case 'ArrowRight':
+      gravTiltX = Math.min( 1.8, gravTiltX + 0.25); applyGravity(); e.preventDefault(); break;
+    case 'ArrowUp':
+      gravTiltZ = Math.max(-1.8, gravTiltZ - 0.25); applyGravity(); e.preventDefault(); break;
+    case 'ArrowDown':
+      gravTiltZ = Math.min( 1.8, gravTiltZ + 0.25); applyGravity(); e.preventDefault(); break;
+    case 'KeyR':
+      resetSim(); break;
   }
 });
 
 // ---------------------------------------------------------------------------
 // ACTIONS
 // ---------------------------------------------------------------------------
+
+/** Full reset: new sim, particles settle from bottom. */
 function resetSim() {
   scene.remove(sphereMesh);
-  sim       = new SPH(N);
-  gravTiltX = gravTiltZ = 0;
+  sim        = new SPH(N);
+  gravTiltX  = gravTiltZ = 0;
   shakeTimer = 0;
   applyGravity();
   sphereMesh = makeSpheres(N);
   scene.add(sphereMesh);
 }
 
+/**
+ * Particle-count change: spawn new particles pouring from the top.
+ * More visually engaging than an instant teleport.
+ */
+function respawnFromTop() {
+  scene.remove(sphereMesh);
+  sim = new SPH(N);
+  applyGravity();
+  sim.spawnFromTop();
+  sphereMesh = makeSpheres(N);
+  scene.add(sphereMesh);
+}
+
+/** Vertical shake — oscillates the Y gravity component up and down. */
+function triggerShake() {
+  shakeTimer = 1.4;
+  shakeAngle = Math.random() * Math.PI * 2;
+}
+
+/** Wave — tilt the box in a random horizontal direction, then return. */
+function triggerWave() {
+  const ang = Math.random() * Math.PI * 2;
+  gravTiltX = Math.cos(ang) * 1.6;
+  gravTiltZ = Math.sin(ang) * 1.6;
+  applyGravity();
+  setTimeout(() => { gravTiltX = gravTiltZ = 0; applyGravity(); }, 900);
+}
+
 // ---------------------------------------------------------------------------
-// LOOP
+// MAIN LOOP
 // ---------------------------------------------------------------------------
 let lastT = 0, simT = 0, fpsFrames = 0, fpsAcc = 0;
 const fpsBadge = document.getElementById('fpsBadge');
 
 function animate(ts) {
   requestAnimationFrame(animate);
+  if (hidden) return;   // 2D mode active — skip entirely
+
   const dt = Math.min((ts - lastT) * 0.001, 0.05);
   lastT = ts;
   simT += dt;
 
+  // FPS counter
   fpsFrames++; fpsAcc += dt;
   if (fpsAcc >= 0.5) {
     fpsBadge.textContent = Math.round(fpsFrames / fpsAcc) + ' fps';
     fpsFrames = 0; fpsAcc = 0;
   }
 
-  // Shake: oscillate gravity fast like tilting the box side to side
-  let sTX = 0, sTZ = 0;
+  // ------------------------------------------------------------------
+  // Vertical shake: oscillates Y gravity so particles slam floor/ceiling.
+  // The room gets a subtle up/down nudge for physical feedback.
+  // ------------------------------------------------------------------
+  let shakeOffY = 0;
   if (shakeTimer > 0) {
     shakeTimer -= dt;
-    const env = Math.sin((shakeTimer / 1.4) * Math.PI); // bell
-    const osc = Math.sin(simT * 9.0 + shakeAngle);
-    sTX = Math.cos(shakeAngle) * osc * env * 1.8;
-    sTZ = Math.sin(shakeAngle) * osc * env * 1.8;
-    applyGravity(sTX, sTZ);
+    const env = Math.sin((shakeTimer / 1.4) * Math.PI);   // bell envelope
+    const osc = Math.sin(simT * 13.0);                     // fast oscillation
+
+    // Physics: gy flips between strongly positive and strongly negative
+    const gyShake = -(gravBase * (1.0 + osc * env * 2.4));
+    applyGravity(gyShake);
+
+    // Visuals: box nudges in Y and a tiny X roll for drama
+    shakeOffY = osc * env * 0.045;
+    roomGroup.rotation.z += (Math.cos(shakeAngle) * osc * env * 0.05
+                             - roomGroup.rotation.z) * 0.35;
+  } else {
+    applyGravity(); // restore normal gravity
+    // Smooth tilt from arrow keys
+    roomGroup.rotation.z += (-gravTiltX * 0.18 - roomGroup.rotation.z) * 0.12;
+    roomGroup.rotation.x += ( gravTiltZ * 0.18 - roomGroup.rotation.x) * 0.12;
   }
 
+  // Vertical position of the whole room during shake
+  roomGroup.position.y += (shakeOffY - roomGroup.position.y) * 0.25;
+
+  // ------------------------------------------------------------------
+  // Simulation substeps (3× per frame for stability)
+  // ------------------------------------------------------------------
   if (!paused) {
     for (let s = 0; s < 3; s++) sim.step();
     syncSpheres();
   }
 
-  // Tilt room visually to match gravity
-  const tx = gravTiltX + sTX;
-  const tz = gravTiltZ + sTZ;
-  roomGroup.rotation.z += (-tx * 0.18 - roomGroup.rotation.z) * 0.12;
-  roomGroup.rotation.x += ( tz * 0.18 - roomGroup.rotation.x) * 0.12;
-
-  // Animate caustic lights
+  // Animate caustic point-lights
   causticA.position.set(
     Math.sin(simT * 0.73) * 0.38,
     0.18 + Math.cos(simT * 0.55) * 0.18,
     Math.cos(simT * 0.67) * 0.38
   );
 
-  // Cursor visual
+  // Cursor ring pulse
   if (ringPulse > 0) {
     ringPulse -= dt * 2.8;
     const rp = Math.max(ringPulse, 0);
@@ -381,17 +450,21 @@ window.addEventListener('resize', () => {
 (function setupUI() {
   const $ = id => document.getElementById(id);
 
+  // Particle count — triggers spawn-from-top animation
   $('particleCount').addEventListener('input', e => {
     const idx = +e.target.value;
     $('particleVal').textContent = PLABELS[idx];
     N = PCOUNTS[idx];
-    resetSim();
+    respawnFromTop();
   });
+
+  // Sync initial label with default slider value
+  $('particleVal').textContent = PLABELS[+$('particleCount').value];
 
   $('viscosity').addEventListener('input', e => {
     const v = +e.target.value;
     sim.viscosity = v;
-    $('viscosityVal').textContent = v.toFixed(3);
+    $('viscosityVal').textContent = v.toFixed(2);
   });
 
   $('pressure').addEventListener('input', e => {
@@ -406,9 +479,9 @@ window.addEventListener('resize', () => {
     applyGravity();
   });
 
-  document.querySelectorAll('.color-btn').forEach(btn => {
+  document.querySelectorAll('#colorModes3d .color-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('#colorModes3d .color-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       colorMode = +btn.dataset.mode;
     });
@@ -422,19 +495,8 @@ window.addEventListener('resize', () => {
   });
 
   $('resetBtn').addEventListener('click', resetSim);
-
-  $('shakeBtn').addEventListener('click', () => {
-    shakeTimer = 1.4;
-    shakeAngle = Math.random() * Math.PI * 2;
-  });
-
-  $('waveBtn').addEventListener('click', () => {
-    const ang = Math.random() * Math.PI * 2;
-    gravTiltX = Math.cos(ang) * 1.6;
-    gravTiltZ = Math.sin(ang) * 1.6;
-    applyGravity();
-    setTimeout(() => { gravTiltX = gravTiltZ = 0; applyGravity(); }, 900);
-  });
+  $('shakeBtn').addEventListener('click', triggerShake);
+  $('waveBtn').addEventListener('click', triggerWave);
 
   $('toggleUI').addEventListener('click', () => {
     const ui = $('ui');
@@ -442,7 +504,8 @@ window.addEventListener('resize', () => {
     $('toggleUI').textContent = ui.classList.contains('collapsed') ? '+' : '−';
   });
 
-  document.querySelectorAll('input[type="range"]').forEach(inp => {
+  // Gradient fill for range sliders (3D panel only)
+  document.querySelectorAll('#panel3d input[type="range"]').forEach(inp => {
     const upd = () => {
       const pct = ((+inp.value - +inp.min) / (+inp.max - +inp.min)) * 100;
       inp.style.setProperty('--pct', pct + '%');
