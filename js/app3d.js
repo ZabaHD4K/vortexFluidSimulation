@@ -10,7 +10,6 @@ import { SPH }             from './sph.js';
 // ---------------------------------------------------------------------------
 const BOX     = 0.58;
 
-let useGPU    = false;
 let N         = 750;
 let sim       = new SPH(N);
 sim.startPour();
@@ -34,24 +33,15 @@ const POUR_RATE   = 4;
 const POUR_Y      = 0.55;
 const POUR_SPREAD = 0.02;
 
-// GPU async guard
-let computing = false;
-let GPU_POUR_RATE = 40;
-
 // ---------------------------------------------------------------------------
 // GRAVITY HELPER
 // ---------------------------------------------------------------------------
 function applyGravity(gyOverride = null) {
   const len = Math.sqrt(gravTiltX * gravTiltX + 1.0 + gravTiltZ * gravTiltZ);
   const s   = gravBase / len;
-  const gx = gravTiltX * s;
-  const gy = (gyOverride !== null) ? gyOverride : -s;
-  const gz = gravTiltZ * s;
-  if (useGPU) {
-    sim.setGravity(gx, gy, gz);
-  } else {
-    sim.gx = gx; sim.gy = gy; sim.gz = gz;
-  }
+  sim.gx = gravTiltX * s;
+  sim.gy = (gyOverride !== null) ? gyOverride : -s;
+  sim.gz = gravTiltZ * s;
 }
 applyGravity();
 
@@ -352,18 +342,10 @@ function updateCursor(mx, my) {
   ringMesh.visible = true;
   cursorActive = true;
 
-  if (useGPU) {
-    sim.setRepel(_hitPoint.x, _hitPoint.y, _hitPoint.z,
-      isClicking ? 1.0 : 0.15 + cursorVel * 0.2,
-      isClicking ? 0.22 : 0.20);
-  } else {
-    sim.repelFrom(_hitPoint.x, _hitPoint.y, _hitPoint.z, 0.15 + cursorVel * 0.2, 0.20);
-    if (isClicking) {
-      sim.repelFrom(_hitPoint.x, _hitPoint.y, _hitPoint.z, 1.0, 0.22);
-    }
-  }
+  sim.repelFrom(_hitPoint.x, _hitPoint.y, _hitPoint.z, 0.15 + cursorVel * 0.2, 0.20);
 
   if (isClicking) {
+    sim.repelFrom(_hitPoint.x, _hitPoint.y, _hitPoint.z, 1.0, 0.22);
     ringPulse = 1.0;
   }
 }
@@ -373,11 +355,7 @@ canvas.addEventListener('mousedown',  e => {
   if (e.button === 0) {
     isClicking = true;
     const burst = 1.5 + cursorVel * 0.5;
-    if (useGPU) {
-      sim.setRepel(_hitPoint.x, _hitPoint.y, _hitPoint.z, Math.min(burst, 4.0), 0.22);
-    } else {
-      sim.repelFrom(_hitPoint.x, _hitPoint.y, _hitPoint.z, Math.min(burst, 4.0), 0.22);
-    }
+    sim.repelFrom(_hitPoint.x, _hitPoint.y, _hitPoint.z, Math.min(burst, 4.0), 0.22);
     ringPulse = 1.0;
   }
 });
@@ -387,7 +365,6 @@ canvas.addEventListener('mouseleave', () => {
   ringMesh.visible   = false;
   isClicking         = false;
   cursorActive       = false;
-  if (useGPU) sim.clearRepel();
 });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
@@ -490,7 +467,7 @@ function animate(ts) {
   // ------------------------------------------------------------------
   if (pouring && !paused) {
     if (sim.activeN < sim.N) {
-      sim.pourTick(useGPU ? GPU_POUR_RATE : POUR_RATE, 0, POUR_Y, 0, POUR_SPREAD);
+      sim.pourTick(POUR_RATE, 0, POUR_Y, 0, POUR_SPREAD);
     } else {
       pouring = false;
       setTimeout(() => { funnelGroup.visible = false; }, 1500);
@@ -503,27 +480,20 @@ function animate(ts) {
   if (draining && !paused) {
     const floorY = -sim.W;
     sim.drain(0, floorY, 0, DRAIN_RADIUS);
-    if (useGPU) {
-      sim.drainPull = 0.8;
-      sim.drainX = 0; sim.drainY = floorY; sim.drainZ = 0;
-    } else {
-      // Gentle pull toward centre so water flows to the hole
-      for (let i = 0; i < sim.activeN; i++) {
-        const dx = -sim.px[i];
-        const dz = -sim.pz[i];
-        const dist = Math.sqrt(dx * dx + dz * dz) + 0.01;
-        const pull = 0.8 / dist;  // stronger near centre
-        sim.vx[i] += dx * pull * 0.006;
-        sim.vz[i] += dz * pull * 0.006;
-      }
+    // Gentle pull toward centre so water flows to the hole
+    for (let i = 0; i < sim.activeN; i++) {
+      const dx = -sim.px[i];
+      const dz = -sim.pz[i];
+      const dist = Math.sqrt(dx * dx + dz * dz) + 0.01;
+      const pull = 0.8 / dist;  // stronger near centre
+      sim.vx[i] += dx * pull * 0.006;
+      sim.vz[i] += dz * pull * 0.006;
     }
     if (sim.activeN === 0) {
       draining = false;
       drainRing.visible = false;
       drainGlow.visible = false;
     }
-  } else if (useGPU && sim.drainPull) {
-    sim.drainPull = 0;
   }
 
   // ------------------------------------------------------------------
@@ -555,20 +525,8 @@ function animate(ts) {
   // Simulation substeps
   // ------------------------------------------------------------------
   if (!paused) {
-    if (useGPU) {
-      if (!computing) {
-        computing = true;
-        sim.step(4);
-        sim.clearRepel();
-        sim.readback().then(() => {
-          syncSpheres();
-          computing = false;
-        }).catch(() => { computing = false; });
-      }
-    } else {
-      for (let s = 0; s < 4; s++) sim.step();
-      syncSpheres();
-    }
+    for (let s = 0; s < 4; s++) sim.step();
+    syncSpheres();
   }
 
   // Animate caustic lights
@@ -640,52 +598,9 @@ window.addEventListener('resize', () => {
 })();
 
 // ---------------------------------------------------------------------------
-// START — CPU runs immediately, WebGPU upgrades in background
+// START
 // ---------------------------------------------------------------------------
 requestAnimationFrame(animate);
 
-// Try WebGPU upgrade (non-blocking — CPU sim is already running)
-import('./sph-gpu.js').then(async ({ SPHCompute }) => {
-  if (!await SPHCompute.isSupported()) return;
-  try {
-    const gpuN = 20000;
-    const gpu  = new SPHCompute();
-    await gpu.init(gpuN);
-
-    // Hot-swap: preserve current pour/drain state
-    const wasPouring  = pouring;
-    const wasDraining = draining;
-
-    // Transfer active particles from CPU to GPU
-    gpu.startPour();
-    gpu.activeN = 0;
-
-    // Swap sim
-    useGPU = true;
-    N = gpuN;
-    sim = gpu;
-    applyGravity();
-
-    // Rebuild spheres for higher count
-    scene.remove(sphereMesh);
-    sphereMesh = makeSpheres(N);
-    scene.add(sphereMesh);
-
-    // Restart pour if it was active
-    if (wasPouring) {
-      pouring = true;
-      funnelGroup.visible = true;
-    }
-    if (wasDraining) {
-      draining = true;
-      drainRing.visible = true;
-      drainGlow.visible = true;
-    }
-
-    console.log(`Upgraded to WebGPU SPH with ${N} particles`);
-  } catch (e) {
-    console.warn('WebGPU upgrade failed, staying on CPU:', e);
-  }
-}).catch(e => {
-  console.warn('sph-gpu.js load failed, staying on CPU:', e);
-});
+// TODO: WebGPU upgrade disabled until sph-gpu.js is fully tested.
+// To re-enable, uncomment and fix resetSim/startPour to create GPU sims.

@@ -359,8 +359,8 @@ export class SPHCompute {
     this.queue  = this.device.queue;
 
     // Log GPU
-    const info = await adapter.requestAdapterInfo();
-    console.log(`WebGPU: ${info.vendor} ${info.device} (${info.description})`);
+    const info = adapter.info || (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : {});
+    console.log(`WebGPU: ${info.vendor || '?'} ${info.device || '?'} (${info.description || '?'})`);
 
     this._createBuffers();
     this._createPipelines();
