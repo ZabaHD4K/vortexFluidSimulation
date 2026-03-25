@@ -97,7 +97,7 @@ void main() {
   float B=abs(texture(uVorticity,vUv-vec2(0,uTexelSize.y)).r);
   float T=abs(texture(uVorticity,vUv+vec2(0,uTexelSize.y)).r);
   float C=texture(uVorticity,vUv).r;
-  vec2 f=normalize(vec2(abs(T)-abs(B),abs(R)-abs(L))+1e-5)*uCurl*C;
+  vec2 f=normalize(vec2(abs(T)-abs(B),abs(R)-abs(L))+vec2(1e-5))*uCurl*C;
   f.y*=-1.; o=vec4(texture(uVelocity,vUv).xy+f*uDt,0,1);
 }`;
 
@@ -307,9 +307,12 @@ void main() {
     // Spawn across floor, inside walls (x: 8%-92%, y: 5%-25%)
     float bx = 0.08 + rand(s)       * 0.84;
     float by = 0.05 + rand(s + 0.3) * 0.20;
-    // Check spawn point is in fluid
+    // Check spawn point is in fluid; try fallback positions if in wall
     if (texture(uBoundary, vec2(bx, by)).r < 0.5) {
-      bx = 0.5; by = 0.5; // fallback center
+      bx = 0.5; by = 0.7; // fallback to upper center (guaranteed fluid)
+      if (texture(uBoundary, vec2(bx, by)).r < 0.5) {
+        bx = 0.5; by = 0.5;
+      }
     }
     pos  = vec2(bx, by);
     life = 0.3 + rand(s + 0.8) * 0.7;
@@ -356,14 +359,27 @@ void main() {
 // ---------------------------------------------------------------------------
 // GL SETUP
 // ---------------------------------------------------------------------------
-const canvas = document.getElementById('canvas-2d');
+const canvas = document.getElementById('canvas-2d') || document.getElementById('canvas');
 let gl;
 
 function initGL() {
+  if (!canvas) { console.warn('Vortex 2D: no canvas element found'); return false; }
   gl = canvas.getContext('webgl2', { alpha:false, antialias:false, powerPreference:'high-performance' });
-  if (!gl) { document.body.innerHTML='<p style="color:#fff;padding:2rem">WebGL2 not supported.</p>'; return false; }
-  if (!gl.getExtension('EXT_color_buffer_float')) { document.body.innerHTML='<p style="color:#fff;padding:2rem">EXT_color_buffer_float not supported.</p>'; return false; }
+  if (!gl) {
+    console.warn('WebGL2 not supported — 2D fluid mode unavailable');
+    const btn2d = document.querySelector('[data-mode="2d"]');
+    if (btn2d) { btn2d.disabled = true; btn2d.title = 'WebGL2 not supported'; btn2d.style.opacity = '0.4'; }
+    return false;
+  }
+  if (!gl.getExtension('EXT_color_buffer_float')) {
+    console.warn('EXT_color_buffer_float not supported — 2D fluid mode unavailable');
+    const btn2d = document.querySelector('[data-mode="2d"]');
+    if (btn2d) { btn2d.disabled = true; btn2d.title = 'GPU float buffers not supported'; btn2d.style.opacity = '0.4'; }
+    return false;
+  }
   gl.getExtension('OES_texture_float_linear');
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  if (dbg) console.log('GPU (2D):', gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL));
   return true;
 }
 
@@ -633,8 +649,8 @@ function simStep(dt) {
   gl.viewport(0,0,S,S); drawQuad(); velocity.swap();
   enforceBoundary();
 
-  // Advect dye
-  gl.uniform2fv(programs.advect.u.uTexelSize, tD);
+  // Advect dye (use velocity texelSize so dye flows at correct speed)
+  gl.uniform2fv(programs.advect.u.uTexelSize, tS);
   gl.uniform1f(programs.advect.u.uDissipation, cfg.DISSIPATION);
   gl.uniform1i(programs.advect.u.uVelocity, velocity.read.attach(0));
   gl.uniform1i(programs.advect.u.uSource,   dye.read.attach(1));
@@ -833,31 +849,37 @@ window.addEventListener('vortexmode', e => {
 // ---------------------------------------------------------------------------
 function setupUI() {
   const $ = id => document.getElementById(id);
+  const safe = (id, fn) => { const el = $(id); if (el) fn(el); };
 
-  const bubbleSlider = $('particleCount2d');
-  $('particleVal2d').textContent = BUBBLE_LABELS[cfg.BUBBLE_IDX];
+  const bubbleSlider = $('particleCount2d') || $('particleCount');
+  const bubbleLabel  = $('particleVal2d')   || $('particleVal');
+  if (bubbleLabel) bubbleLabel.textContent = BUBBLE_LABELS[cfg.BUBBLE_IDX];
+  if (!bubbleSlider) return; // standalone mode without UI
   bubbleSlider.addEventListener('input', () => {
     cfg.BUBBLE_IDX = +bubbleSlider.value;
-    $('particleVal2d').textContent = BUBBLE_LABELS[cfg.BUBBLE_IDX];
+    if (bubbleLabel) bubbleLabel.textContent = BUBBLE_LABELS[cfg.BUBBLE_IDX];
     initBubbles();
   });
 
-  const vortSlider = $('vorticity');
-  vortSlider.addEventListener('input', () => {
-    cfg.CURL = +vortSlider.value;
-    $('vorticityVal').textContent = vortSlider.value;
+  safe('vorticity', vortSlider => {
+    vortSlider.addEventListener('input', () => {
+      cfg.CURL = +vortSlider.value;
+      safe('vorticityVal', el => { el.textContent = vortSlider.value; });
+    });
   });
 
-  const dissSlider = $('dissipation');
-  dissSlider.addEventListener('input', () => {
-    cfg.DISSIPATION = +dissSlider.value;
-    $('dissipationVal').textContent = (+dissSlider.value).toFixed(2);
+  safe('dissipation', dissSlider => {
+    dissSlider.addEventListener('input', () => {
+      cfg.DISSIPATION = +dissSlider.value;
+      safe('dissipationVal', el => { el.textContent = (+dissSlider.value).toFixed(2); });
+    });
   });
 
-  const splatSlider = $('splatSize');
-  splatSlider.addEventListener('input', () => {
-    cfg.SPLAT_RADIUS = +splatSlider.value * 0.003;
-    $('splatVal').textContent = (+splatSlider.value).toFixed(2);
+  safe('splatSize', splatSlider => {
+    splatSlider.addEventListener('input', () => {
+      cfg.SPLAT_RADIUS = +splatSlider.value * 0.003;
+      safe('splatVal', el => { el.textContent = (+splatSlider.value).toFixed(2); });
+    });
   });
 
   document.querySelectorAll('#colorModes2d .color-btn2d').forEach(btn => {
@@ -868,30 +890,29 @@ function setupUI() {
     });
   });
 
-  const pauseBtn = $('pauseBtn2d');
-  pauseBtn.addEventListener('click', () => {
-    cfg.PAUSED = !cfg.PAUSED;
-    pauseBtn.textContent = cfg.PAUSED ? 'Resume' : 'Pause';
-    pauseBtn.classList.toggle('active', cfg.PAUSED);
-  });
-
-  $('resetBtn2d').addEventListener('click', () => {
-    [velocity.read,velocity.write,dye.read,dye.write,
-     pressure.read,pressure.write,divergence,vorticity].forEach(f => {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo);
-      gl.viewport(0,0,f.w,f.h); gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
+  safe('pauseBtn2d', pauseBtn => {
+    pauseBtn.addEventListener('click', () => {
+      cfg.PAUSED = !cfg.PAUSED;
+      pauseBtn.textContent = cfg.PAUSED ? 'Resume' : 'Pause';
+      pauseBtn.classList.toggle('active', cfg.PAUSED);
     });
-    initBubbles();
-    tidalWave(); tidalWave();
   });
 
-  $('tidalBtn').addEventListener('click', tidalWave);
-
-  const ui = $('ui');
-  $('toggleUI').addEventListener('click', () => {
-    ui.classList.toggle('collapsed');
-    $('toggleUI').textContent = ui.classList.contains('collapsed') ? '+' : '−';
+  safe('resetBtn2d', resetBtn => {
+    resetBtn.addEventListener('click', () => {
+      [velocity.read,velocity.write,dye.read,dye.write,
+       pressure.read,pressure.write,divergence,vorticity].forEach(f => {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo);
+        gl.viewport(0,0,f.w,f.h); gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
+      });
+      initBubbles();
+      tidalWave(); tidalWave();
+    });
   });
+
+  safe('tidalBtn', el => el.addEventListener('click', tidalWave));
+
+  // toggleUI is handled by app3d.js when both scripts load together
 
   document.querySelectorAll('#panel2d input[type="range"]').forEach(inp => {
     const upd = () => {

@@ -6,19 +6,19 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { SPH }             from './sph.js';
 
 // ---------------------------------------------------------------------------
-// PARTICLE PRESETS
-// Radius scales automatically as N^(-1/3) inside SPH — no manual tuning needed.
+// CONFIG
 // ---------------------------------------------------------------------------
-const PCOUNTS = [40, 80, 150, 250, 400];
-const PLABELS = ['40', '80', '150', '250', '400'];
 const BOX     = 0.58;
 
-let N         = PCOUNTS[2];   // default: 150 particles
+let useGPU    = false;
+let N         = 750;
 let sim       = new SPH(N);
+sim.startPour();
+sim.activeN = 0;
 let colorMode = 0;
 let paused    = false;
-let hidden    = false;   // true when 2D mode is active — skip rendering entirely
-let gravBase  = 8;
+let hidden    = false;
+let gravBase  = 5;
 let gravTiltX = 0;
 let gravTiltZ = 0;
 
@@ -26,17 +26,32 @@ let gravTiltZ = 0;
 let shakeTimer = 0;
 let shakeAngle = 0;
 
+// Pour state
+let pouring  = false;
+// Drain state
+let draining = false;
+const POUR_RATE   = 4;
+const POUR_Y      = 0.55;
+const POUR_SPREAD = 0.02;
+
+// GPU async guard
+let computing = false;
+let GPU_POUR_RATE = 40;
+
 // ---------------------------------------------------------------------------
 // GRAVITY HELPER
-// Computes gx/gz from tilt; gy from normal gravity or an override value
-// (used by the vertical shake to oscillate the Y component independently).
 // ---------------------------------------------------------------------------
 function applyGravity(gyOverride = null) {
   const len = Math.sqrt(gravTiltX * gravTiltX + 1.0 + gravTiltZ * gravTiltZ);
   const s   = gravBase / len;
-  sim.gx = gravTiltX * s;
-  sim.gy = (gyOverride !== null) ? gyOverride : -s;
-  sim.gz = gravTiltZ * s;
+  const gx = gravTiltX * s;
+  const gy = (gyOverride !== null) ? gyOverride : -s;
+  const gz = gravTiltZ * s;
+  if (useGPU) {
+    sim.setGravity(gx, gy, gz);
+  } else {
+    sim.gx = gx; sim.gy = gy; sim.gz = gz;
+  }
 }
 applyGravity();
 
@@ -44,19 +59,30 @@ applyGravity();
 // RENDERER
 // ---------------------------------------------------------------------------
 const canvas   = document.getElementById('canvas');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+const renderer = new THREE.WebGLRenderer({
+  canvas,
+  antialias: true,
+  powerPreference: 'high-performance',
+  stencil: false,
+  depth: true,
+});
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.toneMapping         = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.5;
 renderer.outputColorSpace    = THREE.SRGBColorSpace;
 
+// Log GPU in use
+const glCtx = renderer.getContext();
+const dbg = glCtx.getExtension('WEBGL_debug_renderer_info');
+if (dbg) console.log('GPU:', glCtx.getParameter(dbg.UNMASKED_RENDERER_WEBGL));
+
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x020508);
 scene.fog = new THREE.FogExp2(0x030610, 0.10);
 
 // ---------------------------------------------------------------------------
-// CAMERA — isometric perspective
+// CAMERA
 // ---------------------------------------------------------------------------
 const camera = new THREE.PerspectiveCamera(32, innerWidth / innerHeight, 0.01, 50);
 camera.position.set(2.8, 2.2, 2.8);
@@ -70,7 +96,6 @@ controls.maxDistance   = 8.0;
 controls.minPolarAngle = Math.PI / 8;
 controls.maxPolarAngle = Math.PI / 2.1;
 controls.target.set(0, -0.1, 0);
-// Left-drag = push water (custom raycaster), Right-drag = orbit, Middle = zoom
 controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
 
 // ---------------------------------------------------------------------------
@@ -95,7 +120,7 @@ causticB.position.set(-0.3, -0.2, -0.2);
 scene.add(causticB);
 
 // ---------------------------------------------------------------------------
-// CONTAINER BOX  (tiltable group)
+// CONTAINER BOX (tiltable group)
 // ---------------------------------------------------------------------------
 const roomGroup = new THREE.Group();
 scene.add(roomGroup);
@@ -118,7 +143,6 @@ scene.add(roomGroup);
   floor.position.y = -BOX + 0.001;
   roomGroup.add(floor);
 
-  // Floor tile grid
   const lines = [];
   for (let t = 0; t <= 8; t++) {
     const v = -BOX + (t / 8) * W;
@@ -135,7 +159,6 @@ scene.add(roomGroup);
     new THREE.LineBasicMaterial({ color: 0x1a4a2a, transparent: true, opacity: 0.45 })
   ));
 
-  // Corner accent dots
   const dotG = new THREE.SphereGeometry(0.010, 6, 5);
   const dotM = new THREE.MeshBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.55 });
   for (const x of [-BOX, BOX])
@@ -148,8 +171,69 @@ scene.add(roomGroup);
 })();
 
 // ---------------------------------------------------------------------------
+// FUNNEL — visible during pour
+// ---------------------------------------------------------------------------
+const funnelGroup = new THREE.Group();
+
+(function buildFunnel() {
+  const funnelMat = new THREE.MeshStandardMaterial({
+    color: 0x44aacc, transparent: true, opacity: 0.12,
+    side: THREE.DoubleSide, roughness: 0.1, metalness: 0.5
+  });
+
+  // Truncated cone: wide top (mouth) → narrow bottom (spout)
+  const coneGeo = new THREE.CylinderGeometry(0.03, 0.18, 0.22, 12, 1, true);
+  funnelGroup.add(new THREE.Mesh(coneGeo, funnelMat));
+
+  // Wireframe outline
+  funnelGroup.add(new THREE.LineSegments(
+    new THREE.EdgesGeometry(coneGeo),
+    new THREE.LineBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.35 })
+  ));
+
+  // Narrow spout cylinder
+  const spoutGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.06, 8, 1, true);
+  const spout = new THREE.Mesh(spoutGeo, funnelMat.clone());
+  spout.position.y = -0.14;
+  funnelGroup.add(spout);
+
+  // Spout wireframe
+  funnelGroup.add(new THREE.LineSegments(
+    new THREE.EdgesGeometry(spoutGeo),
+    new THREE.LineBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.25 })
+  ).translateY(-0.14));
+
+  // Position so spout exit is at POUR_Y
+  funnelGroup.position.y = POUR_Y + 0.17;
+  funnelGroup.visible = false;
+  roomGroup.add(funnelGroup);
+})();
+
+// ---------------------------------------------------------------------------
+// DRAIN HOLE — small ring on the floor centre, visible when draining
+// ---------------------------------------------------------------------------
+const DRAIN_RADIUS = 0.09;
+const drainRing = new THREE.Mesh(
+  new THREE.RingGeometry(0.01, DRAIN_RADIUS, 16),
+  new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide })
+);
+drainRing.rotation.x = -Math.PI / 2;
+drainRing.position.y = -BOX + 0.003;
+drainRing.visible = false;
+roomGroup.add(drainRing);
+
+// Glow ring around the hole
+const drainGlow = new THREE.Mesh(
+  new THREE.RingGeometry(DRAIN_RADIUS, DRAIN_RADIUS + 0.015, 16),
+  new THREE.MeshBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.5, side: THREE.DoubleSide })
+);
+drainGlow.rotation.x = -Math.PI / 2;
+drainGlow.position.y = -BOX + 0.003;
+drainGlow.visible = false;
+roomGroup.add(drainGlow);
+
+// ---------------------------------------------------------------------------
 // WATER SPHERES — InstancedMesh coloured by speed
-// Polygon count scales down with N to keep draw calls cheap at 400 particles.
 // ---------------------------------------------------------------------------
 const COLOR_MODES = [
   [new THREE.Color(0x001f6e), new THREE.Color(0x22eeff)],  // Deep
@@ -166,10 +250,13 @@ let sphereMesh = makeSpheres(N);
 scene.add(sphereMesh);
 
 function sphereSegments(n) {
-  if (n >= 300) return [9,  7];
-  if (n >= 150) return [13, 10];
-  if (n >=  80) return [18, 13];
-  return [24, 16];
+  if (n >= 5000)  return [4,  2];
+  if (n >= 1200) return [5,  3];
+  if (n >= 800)  return [6,  4];
+  if (n >= 400)  return [8,  6];
+  if (n >= 200)  return [10, 7];
+  if (n >= 100)  return [14, 10];
+  return [20, 14];
 }
 
 function makeSpheres(n) {
@@ -180,6 +267,8 @@ function makeSpheres(n) {
     n
   );
   m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  m.frustumCulled = false;
+  m.count = sim.activeN;
   return m;
 }
 
@@ -188,18 +277,20 @@ const _c  = new THREE.Color();
 
 function syncSpheres() {
   const [slow, fast] = COLOR_MODES[colorMode];
-  for (let i = 0; i < sim.N; i++) {
+  const AN = sim.activeN;
+  for (let i = 0; i < AN; i++) {
     _m4.setPosition(sim.px[i], sim.py[i], sim.pz[i]);
     sphereMesh.setMatrixAt(i, _m4);
     _c.lerpColors(slow, fast, Math.min(sim.speed[i] * 0.12, 1.0));
     sphereMesh.setColorAt(i, _c);
   }
+  sphereMesh.count = AN;
   sphereMesh.instanceMatrix.needsUpdate = true;
   if (sphereMesh.instanceColor) sphereMesh.instanceColor.needsUpdate = true;
 }
 
 // ---------------------------------------------------------------------------
-// CURSOR VISUAL  (hover glow + click ring)
+// CURSOR VISUAL
 // ---------------------------------------------------------------------------
 const cursorMesh = new THREE.Mesh(
   new THREE.SphereGeometry(0.040, 14, 10),
@@ -217,14 +308,15 @@ ringMesh.visible = false;
 scene.add(ringMesh);
 
 // ---------------------------------------------------------------------------
-// POST-PROCESSING — Unreal Bloom for that liquid glow
+// POST-PROCESSING — Unreal Bloom
 // ---------------------------------------------------------------------------
+const bloomRes = new THREE.Vector2(Math.floor(innerWidth / 2), Math.floor(innerHeight / 2));
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 1.0, 0.6, 0.45));
+composer.addPass(new UnrealBloomPass(bloomRes, 1.0, 0.6, 0.45));
 
 // ---------------------------------------------------------------------------
-// MOUSE — hover repels water; left-click bursts; right-drag = orbit
+// MOUSE
 // ---------------------------------------------------------------------------
 const raycaster  = new THREE.Raycaster();
 const _mouse     = new THREE.Vector2();
@@ -240,10 +332,10 @@ function updateCursor(mx, my) {
   _mouse.set((mx / innerWidth) * 2 - 1, -(my / innerHeight) * 2 + 1);
   raycaster.setFromCamera(_mouse, camera);
 
-  // Project onto a plane at the average particle height
   let avgY = 0;
-  for (let i = 0; i < sim.N; i++) avgY += sim.py[i];
-  _iPlane.constant = -(avgY / sim.N);
+  const AN = sim.activeN;
+  for (let i = 0; i < AN; i++) avgY += sim.py[i];
+  _iPlane.constant = AN > 0 ? -(avgY / AN) : 0;
 
   if (!raycaster.ray.intersectPlane(_iPlane, _hitPoint)) return;
   const w = sim.W;
@@ -260,11 +352,18 @@ function updateCursor(mx, my) {
   ringMesh.visible = true;
   cursorActive = true;
 
-  // Gentle hover repulsion, scales with cursor speed
-  sim.repelFrom(_hitPoint.x, _hitPoint.y, _hitPoint.z, 0.7 + cursorVel * 1.0, 0.30);
+  if (useGPU) {
+    sim.setRepel(_hitPoint.x, _hitPoint.y, _hitPoint.z,
+      isClicking ? 1.0 : 0.15 + cursorVel * 0.2,
+      isClicking ? 0.22 : 0.20);
+  } else {
+    sim.repelFrom(_hitPoint.x, _hitPoint.y, _hitPoint.z, 0.15 + cursorVel * 0.2, 0.20);
+    if (isClicking) {
+      sim.repelFrom(_hitPoint.x, _hitPoint.y, _hitPoint.z, 1.0, 0.22);
+    }
+  }
 
   if (isClicking) {
-    sim.repelFrom(_hitPoint.x, _hitPoint.y, _hitPoint.z, 5.0, 0.28);
     ringPulse = 1.0;
   }
 }
@@ -273,8 +372,12 @@ canvas.addEventListener('mousemove',  e => updateCursor(e.clientX, e.clientY));
 canvas.addEventListener('mousedown',  e => {
   if (e.button === 0) {
     isClicking = true;
-    const burst = 8.0 + cursorVel * 3.0;
-    sim.repelFrom(_hitPoint.x, _hitPoint.y, _hitPoint.z, Math.min(burst, 20.0), 0.32);
+    const burst = 1.5 + cursorVel * 0.5;
+    if (useGPU) {
+      sim.setRepel(_hitPoint.x, _hitPoint.y, _hitPoint.z, Math.min(burst, 4.0), 0.22);
+    } else {
+      sim.repelFrom(_hitPoint.x, _hitPoint.y, _hitPoint.z, Math.min(burst, 4.0), 0.22);
+    }
     ringPulse = 1.0;
   }
 });
@@ -284,13 +387,14 @@ canvas.addEventListener('mouseleave', () => {
   ringMesh.visible   = false;
   isClicking         = false;
   cursorActive       = false;
+  if (useGPU) sim.clearRepel();
 });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 // Pause rendering when the other simulation is active
 window.addEventListener('vortexmode', e => { hidden = (e.detail.mode !== '3d'); });
 
-// Arrow keys tilt the box; Space = vertical shake; W = wave; R = reset
+// Keyboard
 window.addEventListener('keydown', e => {
   switch (e.code) {
     case 'Space':
@@ -305,6 +409,10 @@ window.addEventListener('keydown', e => {
       gravTiltZ = Math.max(-1.8, gravTiltZ - 0.25); applyGravity(); e.preventDefault(); break;
     case 'ArrowDown':
       gravTiltZ = Math.min( 1.8, gravTiltZ + 0.25); applyGravity(); e.preventDefault(); break;
+    case 'KeyP':
+      startPour(); break;
+    case 'KeyD':
+      toggleDrain(); break;
     case 'KeyR':
       resetSim(); break;
   }
@@ -314,37 +422,40 @@ window.addEventListener('keydown', e => {
 // ACTIONS
 // ---------------------------------------------------------------------------
 
-/** Full reset: new sim, particles settle from bottom. */
 function resetSim() {
   scene.remove(sphereMesh);
   sim        = new SPH(N);
   gravTiltX  = gravTiltZ = 0;
   shakeTimer = 0;
+  pouring    = false;
+  funnelGroup.visible = false;
   applyGravity();
   sphereMesh = makeSpheres(N);
   scene.add(sphereMesh);
 }
 
-/**
- * Particle-count change: spawn new particles pouring from the top.
- * More visually engaging than an instant teleport.
- */
-function respawnFromTop() {
+function startPour() {
   scene.remove(sphereMesh);
   sim = new SPH(N);
   applyGravity();
-  sim.spawnFromTop();
+  sim.startPour();
   sphereMesh = makeSpheres(N);
   scene.add(sphereMesh);
+  funnelGroup.visible = true;
+  pouring = true;
 }
 
-/** Vertical shake — oscillates the Y gravity component up and down. */
+function toggleDrain() {
+  draining = !draining;
+  drainRing.visible = draining;
+  drainGlow.visible = draining;
+}
+
 function triggerShake() {
   shakeTimer = 1.4;
   shakeAngle = Math.random() * Math.PI * 2;
 }
 
-/** Wave — tilt the box in a random horizontal direction, then return. */
 function triggerWave() {
   const ang = Math.random() * Math.PI * 2;
   gravTiltX = Math.cos(ang) * 1.6;
@@ -361,7 +472,7 @@ const fpsBadge = document.getElementById('fpsBadge');
 
 function animate(ts) {
   requestAnimationFrame(animate);
-  if (hidden) return;   // 2D mode active — skip entirely
+  if (hidden) return;
 
   const dt = Math.min((ts - lastT) * 0.001, 0.05);
   lastT = ts;
@@ -375,42 +486,92 @@ function animate(ts) {
   }
 
   // ------------------------------------------------------------------
-  // Vertical shake: oscillates Y gravity so particles slam floor/ceiling.
-  // The room gets a subtle up/down nudge for physical feedback.
+  // Pour: add particles gradually through the funnel
+  // ------------------------------------------------------------------
+  if (pouring && !paused) {
+    if (sim.activeN < sim.N) {
+      sim.pourTick(useGPU ? GPU_POUR_RATE : POUR_RATE, 0, POUR_Y, 0, POUR_SPREAD);
+    } else {
+      pouring = false;
+      setTimeout(() => { funnelGroup.visible = false; }, 1500);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Drain: remove particles near the floor hole + subtle funnel gravity
+  // ------------------------------------------------------------------
+  if (draining && !paused) {
+    const floorY = -sim.W;
+    sim.drain(0, floorY, 0, DRAIN_RADIUS);
+    if (useGPU) {
+      sim.drainPull = 0.8;
+      sim.drainX = 0; sim.drainY = floorY; sim.drainZ = 0;
+    } else {
+      // Gentle pull toward centre so water flows to the hole
+      for (let i = 0; i < sim.activeN; i++) {
+        const dx = -sim.px[i];
+        const dz = -sim.pz[i];
+        const dist = Math.sqrt(dx * dx + dz * dz) + 0.01;
+        const pull = 0.8 / dist;  // stronger near centre
+        sim.vx[i] += dx * pull * 0.006;
+        sim.vz[i] += dz * pull * 0.006;
+      }
+    }
+    if (sim.activeN === 0) {
+      draining = false;
+      drainRing.visible = false;
+      drainGlow.visible = false;
+    }
+  } else if (useGPU && sim.drainPull) {
+    sim.drainPull = 0;
+  }
+
+  // ------------------------------------------------------------------
+  // Vertical shake
   // ------------------------------------------------------------------
   let shakeOffY = 0;
   if (shakeTimer > 0) {
     shakeTimer -= dt;
-    const env = Math.sin((shakeTimer / 1.4) * Math.PI);   // bell envelope
-    const osc = Math.sin(simT * 13.0);                     // fast oscillation
+    const env = Math.sin((shakeTimer / 1.4) * Math.PI);
+    const osc = Math.sin(simT * 13.0);
 
-    // Physics: gy flips between strongly positive and strongly negative
     const gyShake = -(gravBase * (1.0 + osc * env * 2.4));
     applyGravity(gyShake);
 
-    // Visuals: box nudges in Y and a tiny X roll for drama
     shakeOffY = osc * env * 0.045;
     roomGroup.rotation.z += (Math.cos(shakeAngle) * osc * env * 0.05
                              - roomGroup.rotation.z) * 0.35;
   } else {
-    applyGravity(); // restore normal gravity
-    // Smooth tilt from arrow keys
+    applyGravity();
     roomGroup.rotation.z += (-gravTiltX * 0.18 - roomGroup.rotation.z) * 0.12;
     roomGroup.rotation.x += ( gravTiltZ * 0.18 - roomGroup.rotation.x) * 0.12;
   }
 
-  // Vertical position of the whole room during shake
-  roomGroup.position.y += (shakeOffY - roomGroup.position.y) * 0.25;
+  // Subtle dip when draining — box sinks slightly to suggest funnel
+  const drainDip = draining ? -0.045 : 0;
+  roomGroup.position.y += (shakeOffY + drainDip - roomGroup.position.y) * 0.25;
 
   // ------------------------------------------------------------------
-  // Simulation substeps (3× per frame for stability)
+  // Simulation substeps
   // ------------------------------------------------------------------
   if (!paused) {
-    for (let s = 0; s < 3; s++) sim.step();
-    syncSpheres();
+    if (useGPU) {
+      if (!computing) {
+        computing = true;
+        sim.step(4);
+        sim.clearRepel();
+        sim.readback().then(() => {
+          syncSpheres();
+          computing = false;
+        }).catch(() => { computing = false; });
+      }
+    } else {
+      for (let s = 0; s < 4; s++) sim.step();
+      syncSpheres();
+    }
   }
 
-  // Animate caustic point-lights
+  // Animate caustic lights
   causticA.position.set(
     Math.sin(simT * 0.73) * 0.38,
     0.18 + Math.cos(simT * 0.55) * 0.18,
@@ -450,35 +611,6 @@ window.addEventListener('resize', () => {
 (function setupUI() {
   const $ = id => document.getElementById(id);
 
-  // Particle count — triggers spawn-from-top animation
-  $('particleCount').addEventListener('input', e => {
-    const idx = +e.target.value;
-    $('particleVal').textContent = PLABELS[idx];
-    N = PCOUNTS[idx];
-    respawnFromTop();
-  });
-
-  // Sync initial label with default slider value
-  $('particleVal').textContent = PLABELS[+$('particleCount').value];
-
-  $('viscosity').addEventListener('input', e => {
-    const v = +e.target.value;
-    sim.viscosity = v;
-    $('viscosityVal').textContent = v.toFixed(2);
-  });
-
-  $('pressure').addEventListener('input', e => {
-    const v = +e.target.value;
-    sim.RESTITUTION = v;
-    $('pressureVal').textContent = v.toFixed(2);
-  });
-
-  $('gravity').addEventListener('input', e => {
-    gravBase = +e.target.value;
-    $('gravityVal').textContent = e.target.value;
-    applyGravity();
-  });
-
   document.querySelectorAll('#colorModes3d .color-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('#colorModes3d .color-btn').forEach(b => b.classList.remove('active'));
@@ -495,23 +627,65 @@ window.addEventListener('resize', () => {
   });
 
   $('resetBtn').addEventListener('click', resetSim);
+  $('pourBtn').addEventListener('click', startPour);
+  $('drainBtn').addEventListener('click', toggleDrain);
   $('shakeBtn').addEventListener('click', triggerShake);
   $('waveBtn').addEventListener('click', triggerWave);
 
   $('toggleUI').addEventListener('click', () => {
     const ui = $('ui');
     ui.classList.toggle('collapsed');
-    $('toggleUI').textContent = ui.classList.contains('collapsed') ? '+' : '−';
-  });
-
-  // Gradient fill for range sliders (3D panel only)
-  document.querySelectorAll('#panel3d input[type="range"]').forEach(inp => {
-    const upd = () => {
-      const pct = ((+inp.value - +inp.min) / (+inp.max - +inp.min)) * 100;
-      inp.style.setProperty('--pct', pct + '%');
-    };
-    inp.addEventListener('input', upd); upd();
+    $('toggleUI').textContent = ui.classList.contains('collapsed') ? '+' : '\u2212';
   });
 })();
 
+// ---------------------------------------------------------------------------
+// START — CPU runs immediately, WebGPU upgrades in background
+// ---------------------------------------------------------------------------
 requestAnimationFrame(animate);
+
+// Try WebGPU upgrade (non-blocking — CPU sim is already running)
+import('./sph-gpu.js').then(async ({ SPHCompute }) => {
+  if (!await SPHCompute.isSupported()) return;
+  try {
+    const gpuN = 20000;
+    const gpu  = new SPHCompute();
+    await gpu.init(gpuN);
+
+    // Hot-swap: preserve current pour/drain state
+    const wasPouring  = pouring;
+    const wasDraining = draining;
+
+    // Transfer active particles from CPU to GPU
+    gpu.startPour();
+    gpu.activeN = 0;
+
+    // Swap sim
+    useGPU = true;
+    N = gpuN;
+    sim = gpu;
+    applyGravity();
+
+    // Rebuild spheres for higher count
+    scene.remove(sphereMesh);
+    sphereMesh = makeSpheres(N);
+    scene.add(sphereMesh);
+
+    // Restart pour if it was active
+    if (wasPouring) {
+      pouring = true;
+      funnelGroup.visible = true;
+    }
+    if (wasDraining) {
+      draining = true;
+      drainRing.visible = true;
+      drainGlow.visible = true;
+    }
+
+    console.log(`Upgraded to WebGPU SPH with ${N} particles`);
+  } catch (e) {
+    console.warn('WebGPU upgrade failed, staying on CPU:', e);
+  }
+}).catch(e => {
+  console.warn('sph-gpu.js load failed, staying on CPU:', e);
+});

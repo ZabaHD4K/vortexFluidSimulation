@@ -8,7 +8,7 @@ A portfolio project demonstrating real-time physics simulation, GPU programming,
 
 ## Live demos
 
-Open `index.html` in any modern browser. Switch between simulations using the **3D SPH / 2D Fluid** buttons in the top-right panel.
+Run `start.bat` (Windows) or start a local server and open `index.html`. Switch between simulations using the **3D SPH / 2D Fluid** buttons in the top-right panel.
 
 ---
 
@@ -16,7 +16,7 @@ Open `index.html` in any modern browser. Switch between simulations using the **
 
 ### 3D SPH — particle fluid in a glass box
 
-Water-like particles simulated with real physics equations inside a tiltable 3D box. You can rotate the camera, push particles with the cursor, shake the box vertically, and tilt it with arrow keys.
+Water-like particles simulated with real SPH pressure physics inside a tiltable 3D box. Particles flow like a liquid — they resist compression, fill gaps, slosh on tilt, and splash on impact. You can rotate the camera, push particles with the cursor, shake the box, and tilt it with arrow keys.
 
 ### 2D Navier-Stokes — GPU fluid solver
 
@@ -30,27 +30,88 @@ Both simulations share a single page. Switching modes pauses the inactive engine
 
 | Layer | Technology |
 |---|---|
-| 3D Render | Three.js r160 — InstancedMesh, UnrealBloom, ACES tonemapping |
-| 3D Physics | Custom SPH engine — TypedArrays, spatial hash grid |
+| 3D Render | Three.js r170 — InstancedMesh, UnrealBloom, ACES tonemapping |
+| 3D Physics | Custom dual-density SPH engine — TypedArrays, spatial hash grid |
 | 2D Fluid | Custom WebGL2 Navier-Stokes solver — GLSL compute shaders |
-| Module system | Native ES Modules + Import Maps — zero bundler |
+| Module system | Native ES Modules + Import Maps (Three.js via CDN) — zero bundler |
 | UI | Glassmorphism panel — pure CSS, no framework |
 
 ---
 
 ## How the physics works
 
-### 3D: Smoothed Particle Hydrodynamics
+### 3D: Dual-Density Smoothed Particle Hydrodynamics
 
-Each particle interacts with its neighbours through three forces:
+The 3D simulation implements a Clavet-inspired dual-density SPH model. Each frame runs through a full fluid dynamics pipeline:
 
-**Viscosity** — velocity-matching between neighbours. Low value = water. High value = honey.
+#### SPH pipeline (per sub-step)
 
-**Cohesion** — gentle attraction just beyond the hard-contact radius, keeping the blob together like surface tension.
+```
+1. Gravity seed               — initialize force accumulators
+2. Spatial grid build          — sort particles into uniform cells
+3. Density estimation          — compute ρ and ρ_near from kernel sums
+4. Pressure computation        — equation of state: P = k(ρ - ρ₀)
+5. Pairwise forces             — pressure gradient + viscosity + cohesion
+6. Velocity & position update  — explicit Euler integration
+7. Grid rebuild                — re-sort for collision detection
+8. PBD collision resolution    — hard-sphere overlap correction (2 iterations)
+9. Speed magnitude             — for colour mapping
+```
 
-**PBD collisions** — Position-Based Dynamics resolves hard-sphere overlaps with immediate position correction and a low restitution coefficient. This gives the inelastic, splashy feel without numerical explosion.
+#### Density estimation
 
-Integration runs at **3 substeps per frame** (effective dt ≈ 1/180 s) for stability.
+Each particle's density is computed by summing SPH kernel contributions from all neighbours within the interaction radius h:
+
+```
+Far density:   ρᵢ  = Σⱼ (1 - d/h)²    — quadratic kernel
+Near density:  ρnᵢ = Σⱼ (1 - d/h)³    — cubic kernel (steeper, short-range)
+```
+
+Rest density (ρ₀) is calibrated automatically from the first frame after reset, representing the natural packing density.
+
+#### Pressure forces
+
+The dual-density approach provides two complementary pressure forces:
+
+**Far pressure** — enforces incompressibility. When particles are compressed above rest density, they repel. When rarefied below rest density, they attract to fill gaps:
+
+```
+P = k × (ρ - ρ₀)
+```
+
+**Near pressure** — prevents particle clustering. A steeper kernel provides strong short-range repulsion that keeps particles from collapsing into each other:
+
+```
+Pnear = k_near × ρ_near
+```
+
+The combined force per pair uses spiky-like kernel gradients:
+
+```
+F = (Pᵢ + Pⱼ) × q + (Pnear_i + Pnear_j) × q²
+```
+
+where q = 1 - d/h. The linear term (far) handles bulk pressure; the quadratic term (near) handles close-range repulsion.
+
+#### Viscosity (XSPH)
+
+Velocity-matching between neighbours smooths the flow:
+
+```
+Δv = viscosity × q × Δt × (vⱼ - vᵢ)
+```
+
+Low values produce water-like flow. High values produce honey-like viscosity.
+
+#### Surface tension (cohesion)
+
+A gentle attraction beyond contact range keeps the fluid blob together at the free surface:
+
+```
+F_cohesion = cohesion × q² × n̂    (only when d > 2r)
+```
+
+This acts only at the boundary of the fluid, not in the bulk (where pressure already maintains density).
 
 #### Spatial hash grid — O(N) scaling
 
@@ -64,7 +125,9 @@ The solution is a **uniform spatial grid**:
 3. For each particle, only check the 27 neighbouring cells
 ```
 
-At 400 particles, each particle checks ~10 neighbours instead of 399 — an **18× speedup**. The grid uses pre-allocated `Int32Array` buffers, zero heap allocations per frame.
+At 400 particles, each particle checks ~15–25 neighbours instead of 399 — an order-of-magnitude speedup. The grid uses pre-allocated `Int32Array` buffers, zero heap allocations per frame.
+
+**Note:** The density pass and force pass both traverse the grid, so there are two neighbour iterations per sub-step. This is inherent to SPH (density must be fully computed before pressure forces can be evaluated).
 
 #### Volume-conserving radius
 
@@ -75,6 +138,10 @@ r = 0.075 × (40 / N)^(1/3)
 ```
 
 This keeps the packing density constant. 400 small spheres fill the same volume as 40 large ones.
+
+#### Integration
+
+4 sub-steps per frame (DT = 0.004 per step, total ~0.016 s/frame at 60 fps). The extra sub-step (vs 3 in simpler models) is needed for stability with pressure forces.
 
 #### Spawn from above
 
@@ -119,10 +186,10 @@ The display shader adds caustics, god rays, foam at high velocity, wall ambient 
 ```
 vortex/
 ├── index.html      Single entry point — hosts both simulations
-├── fluid.html      Standalone 2D page (alternative entry point)
+├── start.bat       One-click launcher (starts server + opens browser)
 ├── style.css       Shared glassmorphism UI
 └── js/
-    ├── sph.js      Pure physics engine (no render dependency)
+    ├── sph.js      Pure SPH physics engine (no render dependency)
     ├── app3d.js    Three.js renderer + input + UI wiring
     └── vortex.js   WebGL2 fluid solver + bubble system + UI wiring
 ```
@@ -139,14 +206,19 @@ Both engines communicate through a `CustomEvent('vortexmode')` dispatched from t
 
 No build step. No npm. Just open a file.
 
-```bash
-# Recommended — local server avoids ES module CORS issues
-npx serve .
-# or
-python -m http.server 8080
+**Windows (easiest):**
+```
+Double-click start.bat
 ```
 
-Then open `http://localhost:8080` (or simply double-click `index.html` in Chrome/Edge).
+**Manual:**
+```bash
+npx serve -l 3000
+# or
+python -m http.server 3000
+```
+
+Then open `http://localhost:3000`.
 
 Requires a browser with WebGL2 support: Chrome 56+, Firefox 51+, Edge 79+, Safari 15+.
 
@@ -183,7 +255,7 @@ Requires a browser with WebGL2 support: Chrome 56+, Firefox 51+, Edge 79+, Safar
 | Slider | What it controls |
 |---|---|
 | Particles | 40 – 400 spheres. Count change spawns a stream from above. |
-| Friction | Velocity-matching strength. Low = water, high = honey. |
+| Friction | XSPH viscosity. Low = water, high = honey. |
 | Bounce | Wall restitution. Low = soft splat, high = bouncy. |
 | Gravity | Downward acceleration magnitude. |
 
@@ -208,6 +280,8 @@ Requires a browser with WebGL2 support: Chrome 56+, Firefox 51+, Edge 79+, Safar
 | 400 | 55 – 60 fps | 30 – 45 fps |
 
 The 2D simulation is GPU-bound. On any machine with hardware WebGL2, 16 384 – 65 536 bubbles run at 60 fps.
+
+Both renderers request `powerPreference: 'high-performance'` to force the discrete GPU on dual-GPU laptops.
 
 ---
 
