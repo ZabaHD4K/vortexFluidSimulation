@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git clone:*)",
+      "Bash(mv \"C:/Users/AlejandroZabaletadel/Desktop/Git/vortex2/.git\" \"C:/Users/AlejandroZabaletadel/Desktop/Git/vortex/\")",
+      "Bash(mv \"C:/Users/AlejandroZabaletadel/Desktop/Git/vortex2/\"* \"C:/Users/AlejandroZabaletadel/Desktop/Git/vortex/\")",
+      "Bash(rmdir \"C:/Users/AlejandroZabaletadel/Desktop/Git/vortex2\")",
+      "Bash(mv \"C:/Users/AlejandroZabaletadel/Desktop/Git/vortex2/.gitattributes\" \"C:/Users/AlejandroZabaletadel/Desktop/Git/vortex/\")"
+    ]
+  }
+}
