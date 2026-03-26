@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vortex — Real-Time Fluid Simulation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+
+  <!-- 3D canvas (Three.js) — active by default -->
+  <canvas id="canvas"></canvas>
+
+  <!-- 2D canvas (WebGL2 Navier-Stokes) — hidden until 2D mode -->
+  <canvas id="canvas-2d" class="canvas-inactive"></canvas>
+
+  <!-- ---------------------------------------------------------------- UI -->
+  <div class="ui" id="ui">
+    <div class="ui-header">
+      <div>
+        <div class="ui-title" id="uiTitle">Vortex 3D</div>
+        <div class="ui-subtitle" id="uiSubtitle">SPH · Real Fluid Mechanics</div>
+      </div>
+      <button class="icon-btn" id="toggleUI">&#8722;</button>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- MODE SWITCHER — replaces the water-colour buttons -->
+    <div class="mode-switcher">
+      <button class="mode-btn active" data-mode="3d">3D SPH</button>
+      <button class="mode-btn"        data-mode="2d">2D Fluid</button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="collapsible">
+
+      <!-- ===================== 3-D CONTROLS ===================== -->
+      <div class="sim-panel" id="panel3d">
+
+        <div class="control-label" style="margin-bottom:8px"><span>Colour</span></div>
+        <div class="color-modes" id="colorModes3d">
+          <button class="color-btn active" data-mode="0"><span>Deep</span></button>
+          <button class="color-btn"        data-mode="1"><span>Tropic</span></button>
+          <button class="color-btn"        data-mode="2"><span>Magma</span></button>
+          <button class="color-btn"        data-mode="3"><span>Void</span></button>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="action-btns">
+          <button class="btn primary" id="pauseBtn">Pause</button>
+          <button class="btn"         id="resetBtn">Reset</button>
+        </div>
+        <button class="btn tidal" id="pourBtn">Pour &nbsp;<span class="key">P</span></button>
+        <button class="btn tidal" id="drainBtn">Drain &nbsp;<span class="key">D</span></button>
+        <button class="btn tidal" id="shakeBtn">Shake &nbsp;<span class="key">Space</span></button>
+        <button class="btn tidal" id="waveBtn">Wave &nbsp;<span class="key">W</span></button>
+
+      </div>
+      <!-- /3D -->
+
+      <!-- ===================== 2-D CONTROLS ===================== -->
+      <div class="sim-panel" id="panel2d" style="display:none">
+
+        <div class="control-group">
+          <div class="control-label">
+            <span>Bubbles</span>
+            <span class="control-value" id="particleVal2d">16 384</span>
+          </div>
+          <input type="range" id="particleCount2d" min="0" max="4" step="1" value="2" />
+        </div>
+
+        <div class="control-group">
+          <div class="control-label">
+            <span>Vorticity</span>
+            <span class="control-value" id="vorticityVal">25</span>
+          </div>
+          <input type="range" id="vorticity" min="5" max="50" step="1" value="25" />
+        </div>
+
+        <div class="control-group">
+          <div class="control-label">
+            <span>Dissipation</span>
+            <span class="control-value" id="dissipationVal">0.985</span>
+          </div>
+          <input type="range" id="dissipation" min="0.90" max="1.00" step="0.001" value="0.985" />
+        </div>
+
+        <div class="control-group">
+          <div class="control-label">
+            <span>Splat Size</span>
+            <span class="control-value" id="splatVal">0.83</span>
+          </div>
+          <input type="range" id="splatSize" min="0.20" max="2.50" step="0.05" value="0.83" />
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="control-label" style="margin-bottom:8px"><span>Colour</span></div>
+        <div class="color-modes" id="colorModes2d">
+          <button class="color-btn2d active" data-mode="0"><span>Ocean</span></button>
+          <button class="color-btn2d"        data-mode="1"><span>Tropic</span></button>
+          <button class="color-btn2d"        data-mode="2"><span>Thermal</span></button>
+          <button class="color-btn2d"        data-mode="3"><span>Biolum</span></button>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="action-btns">
+          <button class="btn primary" id="pauseBtn2d">Pause</button>
+          <button class="btn"         id="resetBtn2d">Reset</button>
+        </div>
+        <button class="btn tidal" id="tidalBtn">
+          Tidal Wave &nbsp;<span class="key">Space</span>
+        </button>
+
+      </div>
+      <!-- /2D -->
+
+    </div>
+  </div>
+
+  <!-- Contextual hints -->
+  <div class="controls-hint" id="hint3d">
+    <span>Left drag &mdash; push</span>
+    <span class="sep">&middot;</span>
+    <span>Right drag &mdash; rotate</span>
+    <span class="sep">&middot;</span>
+    <span>Arrows &mdash; tilt</span>
+    <span class="sep">&middot;</span>
+    <span>Space &mdash; shake</span>
+  </div>
+  <div class="controls-hint" id="hint2d" style="display:none">
+    <span>Click &amp; drag &mdash; paint flow</span>
+    <span class="sep">&middot;</span>
+    <span>Space &mdash; tidal wave</span>
+    <span class="sep">&middot;</span>
+    <span>Touch supported</span>
+  </div>
+
+  <div class="fps-badge" id="fpsBadge">-- fps</div>
+
+  <!-- --------------------------------------------------------- MODE LOGIC -->
+  <script>
+    (function () {
+      // Titles per mode
+      const META = {
+        '3d': { title: 'Vortex 3D', sub: 'SPH \u00b7 Real Fluid Mechanics' },
+        '2d': { title: 'Vortex 2D', sub: 'Navier-Stokes \u00b7 GPU Fluid'  },
+      };
+
+      window.setSimMode = function (mode) {
+        const is3d = mode === '3d';
+
+        // Canvas visibility
+        document.getElementById('canvas')   .classList.toggle('canvas-inactive', !is3d);
+        document.getElementById('canvas-2d').classList.toggle('canvas-inactive',  is3d);
+
+        // Control panels
+        document.getElementById('panel3d').style.display = is3d ? '' : 'none';
+        document.getElementById('panel2d').style.display = is3d ? 'none' : '';
+
+        // Contextual hints
+        document.getElementById('hint3d').style.display = is3d ? '' : 'none';
+        document.getElementById('hint2d').style.display = is3d ? 'none' : '';
+
+        // Header text
+        document.getElementById('uiTitle').textContent    = META[mode].title;
+        document.getElementById('uiSubtitle').textContent = META[mode].sub;
+
+        // Mode button highlight
+        document.querySelectorAll('.mode-btn').forEach(b =>
+          b.classList.toggle('active', b.dataset.mode === mode));
+
+        // Notify both simulation modules
+        window.dispatchEvent(new CustomEvent('vortexmode', { detail: { mode } }));
+      };
+
+      document.querySelectorAll('.mode-btn').forEach(btn =>
+        btn.addEventListener('click', () => window.setSimMode(btn.dataset.mode)));
+    })();
+  </script>
+
+  <script type="module" src="js/app3d.js"></script>
+  <script type="module" src="js/vortex.js"></script>
+</body>
+</html>

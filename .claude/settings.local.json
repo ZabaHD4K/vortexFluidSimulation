@@ -6,7 +6,15 @@
       "Bash(mv \"C:/Users/AlejandroZabaletadel/Desktop/Git/vortex2/\"* \"C:/Users/AlejandroZabaletadel/Desktop/Git/vortex/\")",
       "Bash(rmdir \"C:/Users/AlejandroZabaletadel/Desktop/Git/vortex2\")",
       "Bash(mv \"C:/Users/AlejandroZabaletadel/Desktop/Git/vortex2/.gitattributes\" \"C:/Users/AlejandroZabaletadel/Desktop/Git/vortex/\")",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(nvidia-smi:*)",
+      "Read(//c/Program Files/**)",
+      "Bash(ls /c/cuda*)",
+      "Read(//c/Users/aleja/AppData/Local/Programs//**)",
+      "Bash(conda list)",
+      "Bash(pip list)"
     ]
   }
 }
